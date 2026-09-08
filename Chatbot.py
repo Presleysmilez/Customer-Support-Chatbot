@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """
 Professional Business Support Chatbox
-Phase 3
+Phase 4 - Business & Production Edition
 
 Python: 3.11+
 
-Phase 3 capabilities:
-- Everything from Phase 2
-- Persistent SQLite database
-- Persistent conversation history
-- Persistent customer/session records
-- Local business knowledge base
-- Knowledge-base management
-- Improved conversation context
-- Customer information extraction
-- Escalation tracking
-- Conversation statistics
-- CSV conversation export
-- Session management
-- Security protection
-- Graceful error handling
+Phase 4 capabilities:
+- Everything from Phase 3
+- Business configuration management
+- Persistent support tickets
+- Ticket lifecycle management
+- SLA tracking
+- Priority-based ticket handling
+- Audit logging
+- Agent workflow
+- Customer status management
+- Conversation analytics
+- Session activity tracking
+- Knowledge-base administration
+- Health/status monitoring
+- Improved security controls
+- Input validation
+- Safer database handling
+- Graceful error recovery
+- CSV exports
+- Production-oriented architecture
 
 Standard library only.
 No external packages required.
@@ -28,17 +33,61 @@ No external packages required.
 from __future__ import annotations
 
 import csv
+import os
 import re
 import sqlite3
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 
-class BusinessDatabase:
-    """Persistent SQLite storage for the chatbot."""
+# ================================================================
+# APPLICATION CONFIGURATION
+# ================================================================
 
-    def __init__(self, database_file: str = "business_chatbot.db") -> None:
+class AppConfig:
+    """Central application configuration."""
+
+    APP_NAME = "Professional Business Support Chatbox"
+    VERSION = "4.0"
+    DATABASE_FILE = os.getenv(
+        "BUSINESS_CHATBOT_DB",
+        "business_chatbot.db",
+    )
+
+    MAX_MESSAGE_LENGTH = 2000
+    MAX_SESSION_MESSAGES = 1000
+
+    BUSINESS_NAME = os.getenv(
+        "BUSINESS_NAME",
+        "Professional Support Desk",
+    )
+
+    DEFAULT_AGENT = os.getenv(
+        "DEFAULT_AGENT",
+        "Unassigned",
+    )
+
+    SLA_HOURS = {
+        "high": 4,
+        "medium": 12,
+        "normal": 24,
+    }
+
+
+# ================================================================
+# DATABASE
+# ================================================================
+
+class BusinessDatabase:
+    """Persistent SQLite storage layer."""
+
+    def __init__(
+        self,
+        database_file: str = AppConfig.DATABASE_FILE,
+    ) -> None:
+
         self.database_file = Path(database_file)
 
         self.connection = sqlite3.connect(
@@ -49,13 +98,14 @@ class BusinessDatabase:
 
         self.create_tables()
         self.seed_knowledge()
+        self.seed_configuration()
 
     # ============================================================
     # DATABASE SETUP
     # ============================================================
 
     def create_tables(self) -> None:
-        """Create required database tables."""
+        """Create all required database tables."""
 
         with self.connection:
             self.connection.executescript(
@@ -97,11 +147,49 @@ class BusinessDatabase:
                     status TEXT NOT NULL DEFAULT 'open',
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_number TEXT UNIQUE NOT NULL,
+                    session_id TEXT NOT NULL,
+                    customer_name TEXT,
+                    subject TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    priority TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    assigned_agent TEXT NOT NULL DEFAULT 'Unassigned',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    sla_due_at TEXT NOT NULL,
+                    resolved_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    action TEXT NOT NULL,
+                    details TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS configuration (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    customer_name TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
 
     def seed_knowledge(self) -> None:
-        """Add basic knowledge if the knowledge base is empty."""
+        """Seed default knowledge entries."""
 
         count = self.connection.execute(
             "SELECT COUNT(*) FROM knowledge"
@@ -113,7 +201,7 @@ class BusinessDatabase:
         default_knowledge = [
             (
                 "security",
-                "security password otp pin cvv credentials",
+                "security password otp pin cvv credentials token",
                 (
                     "For your security, never share passwords, PINs, "
                     "OTPs, CVVs, access tokens, or full payment-card "
@@ -124,28 +212,39 @@ class BusinessDatabase:
                 "support_process",
                 "support help assistance process customer service",
                 (
-                    "Our support process is designed to understand the "
-                    "request, collect relevant non-sensitive information, "
-                    "identify the appropriate support area, and determine "
-                    "the appropriate next step."
+                    "Our support process is designed to understand "
+                    "the request, collect relevant non-sensitive "
+                    "information, identify the appropriate support "
+                    "area, and determine the appropriate next step."
                 ),
             ),
             (
                 "refund",
                 "refund money return payment refund request",
                 (
-                    "A refund request should normally include the relevant "
-                    "order or invoice reference, approximate transaction "
-                    "date, reason for the request, and desired resolution. "
-                    "Do not provide payment credentials."
+                    "A refund request should normally include the "
+                    "relevant order or invoice reference, approximate "
+                    "transaction date, reason for the request, and "
+                    "desired resolution. Do not provide payment "
+                    "credentials."
                 ),
             ),
             (
                 "business_hours",
                 "hours opening working business support",
                 (
-                    "Official business hours have not yet been configured "
-                    "in the local knowledge base."
+                    "Official business hours have not yet been "
+                    "configured in the local knowledge base."
+                ),
+            ),
+            (
+                "privacy",
+                "privacy personal information data protection",
+                (
+                    "Please provide only the information necessary "
+                    "to resolve your request. Do not send passwords, "
+                    "authentication codes, payment credentials, or "
+                    "other highly sensitive information."
                 ),
             ),
         ]
@@ -160,6 +259,153 @@ class BusinessDatabase:
                 default_knowledge,
             )
 
+    def seed_configuration(self) -> None:
+        """Create default business configuration."""
+
+        defaults = {
+            "business_name": AppConfig.BUSINESS_NAME,
+            "support_status": "operational",
+            "support_email": "Not configured",
+            "support_hours": "Not configured",
+            "default_agent": AppConfig.DEFAULT_AGENT,
+        }
+
+        with self.connection:
+
+            for key, value in defaults.items():
+
+                self.connection.execute(
+                    """
+                    INSERT OR IGNORE INTO configuration
+                    (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        key,
+                        value,
+                        self.now(),
+                    ),
+                )
+
+    @staticmethod
+    def now() -> str:
+        return datetime.now().isoformat(
+            timespec="seconds"
+        )
+
+    # ============================================================
+    # CONFIGURATION
+    # ============================================================
+
+    def get_config(
+        self,
+        key: str,
+    ) -> Optional[str]:
+
+        row = self.connection.execute(
+            """
+            SELECT value
+            FROM configuration
+            WHERE key = ?
+            """,
+            (key,),
+        ).fetchone()
+
+        return row["value"] if row else None
+
+    def set_config(
+        self,
+        key: str,
+        value: str,
+    ) -> None:
+
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO configuration
+                (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key)
+                DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    key,
+                    value,
+                    self.now(),
+                ),
+            )
+
+    def get_all_config(self) -> dict[str, str]:
+
+        rows = self.connection.execute(
+            """
+            SELECT key, value
+            FROM configuration
+            ORDER BY key
+            """
+        ).fetchall()
+
+        return {
+            row["key"]: row["value"]
+            for row in rows
+        }
+
+    # ============================================================
+    # SESSION MANAGEMENT
+    # ============================================================
+
+    def create_session(
+        self,
+        session_id: str,
+    ) -> None:
+
+        timestamp = self.now()
+
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT OR IGNORE INTO sessions
+                (
+                    session_id,
+                    status,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, 'active', ?, ?)
+                """,
+                (
+                    session_id,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+    def update_session(
+        self,
+        session_id: str,
+        customer_name: Optional[str] = None,
+        status: str = "active",
+    ) -> None:
+
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE sessions
+                SET customer_name = ?,
+                    status = ?,
+                    updated_at = ?
+                WHERE session_id = ?
+                """,
+                (
+                    customer_name,
+                    status,
+                    self.now(),
+                    session_id,
+                ),
+            )
+
     # ============================================================
     # MESSAGE STORAGE
     # ============================================================
@@ -171,13 +417,18 @@ class BusinessDatabase:
         text: str,
         intent: Optional[str],
     ) -> None:
-        """Save a conversation message."""
 
         with self.connection:
             self.connection.execute(
                 """
                 INSERT INTO messages
-                (session_id, role, text, intent, created_at)
+                (
+                    session_id,
+                    role,
+                    text,
+                    intent,
+                    created_at
+                )
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (
@@ -185,9 +436,7 @@ class BusinessDatabase:
                     role,
                     text,
                     intent,
-                    datetime.now().isoformat(
-                        timespec="seconds"
-                    ),
+                    self.now(),
                 ),
             )
 
@@ -196,11 +445,14 @@ class BusinessDatabase:
         session_id: str,
         limit: int = 100,
     ) -> list[sqlite3.Row]:
-        """Return messages for a session."""
 
         rows = self.connection.execute(
             """
-            SELECT role, text, intent, created_at
+            SELECT
+                role,
+                text,
+                intent,
+                created_at
             FROM messages
             WHERE session_id = ?
             ORDER BY id DESC
@@ -223,12 +475,12 @@ class BusinessDatabase:
         session_id: str,
         customer: dict[str, Optional[str]],
     ) -> None:
-        """Persist customer/session information."""
 
         with self.connection:
             self.connection.execute(
                 """
-                INSERT INTO customers (
+                INSERT INTO customers
+                (
                     session_id,
                     customer_name,
                     product,
@@ -242,12 +494,36 @@ class BusinessDatabase:
 
                 ON CONFLICT(session_id)
                 DO UPDATE SET
-                    customer_name = excluded.customer_name,
-                    product = excluded.product,
-                    priority = excluded.priority,
-                    issue = excluded.issue,
-                    reference = excluded.reference,
-                    status = excluded.status,
+                    customer_name =
+                        COALESCE(
+                            excluded.customer_name,
+                            customers.customer_name
+                        ),
+                    product =
+                        COALESCE(
+                            excluded.product,
+                            customers.product
+                        ),
+                    priority =
+                        COALESCE(
+                            excluded.priority,
+                            customers.priority
+                        ),
+                    issue =
+                        COALESCE(
+                            excluded.issue,
+                            customers.issue
+                        ),
+                    reference =
+                        COALESCE(
+                            excluded.reference,
+                            customers.reference
+                        ),
+                    status =
+                        COALESCE(
+                            excluded.status,
+                            customers.status
+                        ),
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -258,9 +534,7 @@ class BusinessDatabase:
                     customer.get("issue"),
                     customer.get("reference"),
                     customer.get("status"),
-                    datetime.now().isoformat(
-                        timespec="seconds"
-                    ),
+                    self.now(),
                 ),
             )
 
@@ -272,7 +546,6 @@ class BusinessDatabase:
         self,
         text: str,
     ) -> Optional[str]:
-        """Search the local knowledge base."""
 
         rows = self.connection.execute(
             """
@@ -303,6 +576,7 @@ class BusinessDatabase:
             )
 
             if score > best_score:
+
                 best_score = score
                 best_answer = row["answer"]
 
@@ -317,7 +591,6 @@ class BusinessDatabase:
         keywords: str,
         answer: str,
     ) -> None:
-        """Add a knowledge-base entry."""
 
         with self.connection:
             self.connection.execute(
@@ -334,12 +607,15 @@ class BusinessDatabase:
             )
 
     def get_knowledge(self) -> list[sqlite3.Row]:
-        """Return all active knowledge entries."""
 
         return list(
             self.connection.execute(
                 """
-                SELECT id, topic, keywords, answer
+                SELECT
+                    id,
+                    topic,
+                    keywords,
+                    answer
                 FROM knowledge
                 WHERE active = 1
                 ORDER BY id
@@ -348,7 +624,7 @@ class BusinessDatabase:
         )
 
     # ============================================================
-    # ESCALATION STORAGE
+    # ESCALATIONS
     # ============================================================
 
     def create_escalation(
@@ -356,28 +632,35 @@ class BusinessDatabase:
         session_id: str,
         reason: str,
         priority: str,
-    ) -> None:
-        """Create an escalation record."""
+    ) -> int:
 
         with self.connection:
-            self.connection.execute(
+
+            cursor = self.connection.execute(
                 """
                 INSERT INTO escalations
-                (session_id, reason, priority, created_at)
-                VALUES (?, ?, ?, ?)
+                (
+                    session_id,
+                    reason,
+                    priority,
+                    status,
+                    created_at
+                )
+                VALUES (?, ?, ?, 'open', ?)
                 """,
                 (
                     session_id,
                     reason,
                     priority,
-                    datetime.now().isoformat(
-                        timespec="seconds"
-                    ),
+                    self.now(),
                 ),
             )
 
-    def get_open_escalations(self) -> list[sqlite3.Row]:
-        """Return open escalation records."""
+        return int(cursor.lastrowid)
+
+    def get_open_escalations(
+        self,
+    ) -> list[sqlite3.Row]:
 
         return list(
             self.connection.execute(
@@ -391,8 +674,236 @@ class BusinessDatabase:
                     created_at
                 FROM escalations
                 WHERE status = 'open'
+                ORDER BY
+                    CASE priority
+                        WHEN 'high' THEN 1
+                        WHEN 'medium' THEN 2
+                        ELSE 3
+                    END,
+                    id DESC
+                """
+            )
+        )
+
+    # ============================================================
+    # TICKETS
+    # ============================================================
+
+    def create_ticket(
+        self,
+        session_id: str,
+        customer_name: Optional[str],
+        subject: str,
+        description: str,
+        priority: str,
+    ) -> tuple[str, str]:
+
+        ticket_number = (
+            "TKT-"
+            + datetime.now().strftime("%Y%m%d")
+            + "-"
+            + secrets.token_hex(3).upper()
+        )
+
+        sla_hours = AppConfig.SLA_HOURS.get(
+            priority,
+            24,
+        )
+
+        created = datetime.now()
+
+        due = created + timedelta(
+            hours=sla_hours
+        )
+
+        with self.connection:
+
+            self.connection.execute(
+                """
+                INSERT INTO tickets
+                (
+                    ticket_number,
+                    session_id,
+                    customer_name,
+                    subject,
+                    description,
+                    priority,
+                    status,
+                    assigned_agent,
+                    created_at,
+                    updated_at,
+                    sla_due_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
+                """,
+                (
+                    ticket_number,
+                    session_id,
+                    customer_name,
+                    subject,
+                    description,
+                    priority,
+                    AppConfig.DEFAULT_AGENT,
+                    created.isoformat(
+                        timespec="seconds"
+                    ),
+                    created.isoformat(
+                        timespec="seconds"
+                    ),
+                    due.isoformat(
+                        timespec="seconds"
+                    ),
+                ),
+            )
+
+        return ticket_number, due.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+    def get_tickets(
+        self,
+        status: Optional[str] = None,
+    ) -> list[sqlite3.Row]:
+
+        if status:
+
+            return list(
+                self.connection.execute(
+                    """
+                    SELECT *
+                    FROM tickets
+                    WHERE status = ?
+                    ORDER BY id DESC
+                    """,
+                    (status,),
+                )
+            )
+
+        return list(
+            self.connection.execute(
+                """
+                SELECT *
+                FROM tickets
                 ORDER BY id DESC
                 """
+            )
+        )
+
+    def get_ticket(
+        self,
+        ticket_number: str,
+    ) -> Optional[sqlite3.Row]:
+
+        return self.connection.execute(
+            """
+            SELECT *
+            FROM tickets
+            WHERE ticket_number = ?
+            """,
+            (ticket_number.upper(),),
+        ).fetchone()
+
+    def update_ticket(
+        self,
+        ticket_number: str,
+        status: Optional[str] = None,
+        agent: Optional[str] = None,
+    ) -> bool:
+
+        ticket = self.get_ticket(
+            ticket_number
+        )
+
+        if not ticket:
+            return False
+
+        new_status = (
+            status
+            or ticket["status"]
+        )
+
+        new_agent = (
+            agent
+            or ticket["assigned_agent"]
+        )
+
+        resolved_at = (
+            self.now()
+            if new_status == "resolved"
+            else ticket["resolved_at"]
+        )
+
+        with self.connection:
+
+            self.connection.execute(
+                """
+                UPDATE tickets
+                SET status = ?,
+                    assigned_agent = ?,
+                    updated_at = ?,
+                    resolved_at = ?
+                WHERE ticket_number = ?
+                """,
+                (
+                    new_status,
+                    new_agent,
+                    self.now(),
+                    resolved_at,
+                    ticket_number.upper(),
+                ),
+            )
+
+        return True
+
+    # ============================================================
+    # AUDIT LOG
+    # ============================================================
+
+    def audit(
+        self,
+        action: str,
+        details: str = "",
+        session_id: Optional[str] = None,
+    ) -> None:
+
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO audit_logs
+                (
+                    session_id,
+                    action,
+                    details,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    action,
+                    details,
+                    self.now(),
+                ),
+            )
+
+    def get_audit_logs(
+        self,
+        limit: int = 50,
+    ) -> list[sqlite3.Row]:
+
+        return list(
+            self.connection.execute(
+                """
+                SELECT
+                    session_id,
+                    action,
+                    details,
+                    created_at
+                FROM audit_logs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
             )
         )
 
@@ -400,7 +911,9 @@ class BusinessDatabase:
     # STATISTICS
     # ============================================================
 
-    def get_statistics(self) -> dict[str, int]:
+    def get_statistics(
+        self,
+    ) -> dict[str, int]:
 
         return {
             "messages": self.connection.execute(
@@ -409,6 +922,10 @@ class BusinessDatabase:
 
             "customers": self.connection.execute(
                 "SELECT COUNT(*) FROM customers"
+            ).fetchone()[0],
+
+            "sessions": self.connection.execute(
+                "SELECT COUNT(*) FROM sessions"
             ).fetchone()[0],
 
             "knowledge": self.connection.execute(
@@ -426,7 +943,52 @@ class BusinessDatabase:
                 WHERE status = 'open'
                 """
             ).fetchone()[0],
+
+            "tickets": self.connection.execute(
+                "SELECT COUNT(*) FROM tickets"
+            ).fetchone()[0],
+
+            "open_tickets": self.connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM tickets
+                WHERE status IN ('open', 'in_progress')
+                """
+            ).fetchone()[0],
+
+            "resolved_tickets": self.connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM tickets
+                WHERE status = 'resolved'
+                """
+            ).fetchone()[0],
+
+            "audit_logs": self.connection.execute(
+                "SELECT COUNT(*) FROM audit_logs"
+            ).fetchone()[0],
         }
+
+    # ============================================================
+    # SLA
+    # ============================================================
+
+    def get_sla_breaches(self) -> list[sqlite3.Row]:
+
+        now = self.now()
+
+        return list(
+            self.connection.execute(
+                """
+                SELECT *
+                FROM tickets
+                WHERE status NOT IN ('resolved', 'closed')
+                AND sla_due_at < ?
+                ORDER BY sla_due_at
+                """,
+                (now,),
+            )
+        )
 
     # ============================================================
     # EXPORT
@@ -471,6 +1033,7 @@ class BusinessDatabase:
             )
 
             for row in rows:
+
                 writer.writerow(
                     [
                         row["session_id"],
@@ -483,28 +1046,108 @@ class BusinessDatabase:
 
         return output
 
+    def export_tickets(
+        self,
+        filename: str = "ticket_export.csv",
+    ) -> Path:
+
+        output = Path(filename)
+
+        rows = self.get_tickets()
+
+        with output.open(
+            "w",
+            newline="",
+            encoding="utf-8",
+        ) as file:
+
+            writer = csv.writer(file)
+
+            writer.writerow(
+                [
+                    "ticket_number",
+                    "session_id",
+                    "customer_name",
+                    "subject",
+                    "description",
+                    "priority",
+                    "status",
+                    "assigned_agent",
+                    "created_at",
+                    "updated_at",
+                    "sla_due_at",
+                    "resolved_at",
+                ]
+            )
+
+            for row in rows:
+
+                writer.writerow(
+                    [
+                        row["ticket_number"],
+                        row["session_id"],
+                        row["customer_name"],
+                        row["subject"],
+                        row["description"],
+                        row["priority"],
+                        row["status"],
+                        row["assigned_agent"],
+                        row["created_at"],
+                        row["updated_at"],
+                        row["sla_due_at"],
+                        row["resolved_at"],
+                    ]
+                )
+
+        return output
+
+    # ============================================================
+    # HEALTH CHECK
+    # ============================================================
+
+    def health_check(self) -> dict[str, str]:
+
+        try:
+
+            self.connection.execute(
+                "SELECT 1"
+            ).fetchone()
+
+            return {
+                "database": "OK",
+                "status": "HEALTHY",
+            }
+
+        except sqlite3.Error:
+
+            return {
+                "database": "ERROR",
+                "status": "DEGRADED",
+            }
+
     # ============================================================
     # CLOSE
     # ============================================================
 
     def close(self) -> None:
+
         self.connection.close()
 
 
-class TextChat:
-    """Professional Phase 3 business support chatbot."""
+# ================================================================
+# CHAT APPLICATION
+# ================================================================
 
-    MAX_MESSAGE_LENGTH = 2000
+class TextChat:
+    """Professional Phase 4 business support chatbot."""
+
+    MAX_MESSAGE_LENGTH = AppConfig.MAX_MESSAGE_LENGTH
 
     def __init__(self) -> None:
 
         self.database = BusinessDatabase()
 
-        self.session_id = (
-            datetime.now().strftime(
-                "%Y%m%d%H%M%S%f"
-            )
-        )
+        self.session_id = self.create_session_id()
 
         self.session: dict[
             str,
@@ -516,13 +1159,38 @@ class TextChat:
             "issue": None,
             "product": None,
             "reference": None,
-            "status": None,
+            "status": "active",
             "last_question": None,
         }
 
         self.running = True
 
+        self.database.create_session(
+            self.session_id
+        )
+
+        self.database.audit(
+            "SESSION_CREATED",
+            "New customer support session started.",
+            self.session_id,
+        )
+
         self.print_welcome()
+
+    # ============================================================
+    # SESSION ID
+    # ============================================================
+
+    @staticmethod
+    def create_session_id() -> str:
+
+        return (
+            datetime.now().strftime(
+                "%Y%m%d%H%M%S"
+            )
+            + "-"
+            + secrets.token_hex(3)
+        )
 
     # ============================================================
     # DISPLAY
@@ -530,33 +1198,32 @@ class TextChat:
 
     def print_welcome(self) -> None:
 
-        print("=" * 78)
+        print("=" * 82)
 
         print(
-            "                 PROFESSIONAL BUSINESS SUPPORT"
+            f"              {AppConfig.APP_NAME.upper()}"
         )
 
         print(
-            "                              PHASE 3"
+            "                       PHASE 4"
         )
 
-        print("=" * 78)
+        print("=" * 82)
 
         self.add_message(
             (
-                "Welcome to our professional support desk. "
-                "I'm here to understand your request, maintain "
-                "the relevant conversation context, and guide "
-                "you toward the appropriate next step. "
+                f"Welcome to {AppConfig.BUSINESS_NAME}. "
+                "I'm your professional support assistant. "
+                "I can help identify your request, maintain "
+                "conversation context, create structured "
+                "support tickets, and guide your issue "
+                "toward the appropriate next step. "
                 "How may I assist you today?"
             ),
             False,
         )
 
         print()
-        print(
-            "You can describe your request naturally."
-        )
         print(
             "Type 'help' to see available commands."
         )
@@ -583,6 +1250,7 @@ class TextChat:
         print(
             f"[{timestamp}] {sender}:"
         )
+
         print(
             f"  {text}"
         )
@@ -709,6 +1377,9 @@ class TextChat:
             r"\s*[:=]\s*\S+",
 
             r"\b(?:otp|one[- ]time password)"
+            r"\s*[:=]\s*\S+",
+
+            r"\b(?:api[_ -]?key|access[_ -]?token)"
             r"\s*[:=]\s*\S+",
         )
 
@@ -972,7 +1643,7 @@ class TextChat:
         )
 
     # ============================================================
-    # SESSION
+    # SESSION UPDATE
     # ============================================================
 
     def update_session(
@@ -1001,13 +1672,71 @@ class TextChat:
         )
 
         if name:
+
             self.session[
                 "customer_name"
             ] = name
 
+            self.database.update_session(
+                self.session_id,
+                name,
+                "active",
+            )
+
         self.database.save_customer(
             self.session_id,
             self.session,
+        )
+
+    # ============================================================
+    # TICKET CREATION
+    # ============================================================
+
+    def create_support_ticket(
+        self,
+        subject: str,
+        description: str,
+        priority: Optional[str] = None,
+    ) -> str:
+
+        priority = (
+            priority
+            or self.session.get("priority")
+            or "normal"
+        )
+
+        ticket_number, due = (
+            self.database.create_ticket(
+                self.session_id,
+                self.session.get(
+                    "customer_name"
+                ),
+                subject,
+                description,
+                priority,
+            )
+        )
+
+        self.database.audit(
+            "TICKET_CREATED",
+            (
+                f"{ticket_number} created with "
+                f"{priority} priority. "
+                f"SLA due: {due}"
+            ),
+            self.session_id,
+        )
+
+        return (
+            f"Support ticket {ticket_number} "
+            f"has been created successfully.\n\n"
+            f"Priority: {priority.upper()}\n"
+            f"SLA target: {due}\n"
+            f"Status: OPEN\n"
+            f"Assigned agent: "
+            f"{AppConfig.DEFAULT_AGENT}\n\n"
+            "Please keep the ticket number for "
+            "future reference."
         )
 
     # ============================================================
@@ -1021,11 +1750,11 @@ class TextChat:
         )
 
         if name:
+
             return (
-                f"Hello, {name}. Thank you "
-                "for contacting our professional "
-                "support desk. How may I assist "
-                "you today?"
+                f"Hello, {name}. Thank you for "
+                "contacting our professional support "
+                "desk. How may I assist you today?"
             )
 
         return (
@@ -1039,27 +1768,41 @@ class TextChat:
     def about_response(self) -> str:
 
         return (
-            "I am a Phase 3 professional business "
-            "support chatbot. I can classify "
-            "customer requests, maintain session "
-            "context, store conversation history, "
-            "search a local knowledge base, collect "
-            "non-sensitive customer information, "
-            "and structure issues for escalation."
+            f"I am {AppConfig.APP_NAME}, "
+            f"version {AppConfig.VERSION}. "
+            "I am designed to support real-world "
+            "business workflows by classifying "
+            "requests, maintaining session context, "
+            "storing conversation history, searching "
+            "a local knowledge base, creating support "
+            "tickets, tracking priority and SLA "
+            "targets, recording audit events, and "
+            "structuring issues for human support."
         )
 
     def help_response(self) -> str:
 
         return (
-            "I can assist with account access, "
-            "billing and payments, technical issues, "
-            "orders and delivery, product and pricing "
-            "enquiries, complaints, partnerships, "
-            "and general business questions.\n\n"
-            "You can also use commands such as "
-            "'history', 'stats', 'session', "
-            "'knowledge', 'escalations', 'export', "
-            "and 'clear'."
+            "I can assist with account access, billing "
+            "and payments, technical issues, orders "
+            "and delivery, product and pricing enquiries, "
+            "complaints, partnerships, and general "
+            "business questions.\n\n"
+            "Business commands:\n"
+            "  help\n"
+            "  history\n"
+            "  stats\n"
+            "  session\n"
+            "  knowledge\n"
+            "  escalations\n"
+            "  tickets\n"
+            "  sla\n"
+            "  audit\n"
+            "  config\n"
+            "  health\n"
+            "  export\n"
+            "  clear\n"
+            "  quit / exit"
         )
 
     def technical_response(
@@ -1088,6 +1831,9 @@ class TextChat:
             "any non-sensitive error message.\n"
             "4. When the issue started and whether "
             "other users are affected.\n\n"
+            "If the issue is business-critical, "
+            "I can structure it as a support ticket "
+            "for human follow-up.\n\n"
             "Please do not provide passwords, access "
             "tokens, OTPs, or other credentials."
         )
@@ -1106,6 +1852,7 @@ class TextChat:
                 "charged two times",
             ),
         ):
+
             return (
                 "I understand that you are reporting "
                 "a possible duplicate charge. Please "
@@ -1113,7 +1860,10 @@ class TextChat:
                 "transaction reference, approximate "
                 "date, and amount. Do not provide "
                 "your full card number, CVV, PIN, "
-                "password, or verification code."
+                "password, or verification code.\n\n"
+                "If the duplicate charge requires "
+                "formal investigation, I can create "
+                "a support ticket."
             )
 
         if self.contains_any(
@@ -1124,13 +1874,17 @@ class TextChat:
                 "want my money back",
             ),
         ):
+
             return (
                 "I can help structure the refund "
                 "request. Please provide what was "
                 "purchased, the approximate transaction "
                 "date, the reason for the request, "
                 "and any order or invoice reference. "
-                "Never share payment credentials."
+                "Never share payment credentials.\n\n"
+                "Once the relevant details are available, "
+                "the request can be recorded for support "
+                "review."
             )
 
         if self.contains_any(
@@ -1142,6 +1896,7 @@ class TextChat:
                 "could not pay",
             ),
         ):
+
             return (
                 "I understand that the payment did "
                 "not complete successfully. Please "
@@ -1174,6 +1929,7 @@ class TextChat:
                 "forgot password",
             ),
         ):
+
             return (
                 "Please use the official password-reset "
                 "process for the account. If the reset "
@@ -1191,6 +1947,7 @@ class TextChat:
                 "locked account",
             ),
         ):
+
             return (
                 "I understand that you are unable to "
                 "access the account because it appears "
@@ -1235,13 +1992,14 @@ class TextChat:
             return (
                 f"Thank you. I have recorded "
                 f"reference {reference}. "
-                "This local application does not "
-                "have access to a live order-management "
-                "system, so I will not invent a current "
-                "status. Please confirm whether you "
-                "need the order status, delivery date, "
-                "tracking assistance, or help with a "
-                "delayed or missing order."
+                "This application does not have "
+                "access to a live order-management "
+                "system, so I will not invent a "
+                "current status.\n\n"
+                "Please confirm whether you need "
+                "the order status, delivery date, "
+                "tracking assistance, or help with "
+                "a delayed or missing order."
             )
 
         return (
@@ -1249,8 +2007,8 @@ class TextChat:
             "Please provide your order or reference "
             "number if available and tell me whether "
             "you need the current status, delivery "
-            "information, tracking assistance, or help "
-            "with a delayed or missing order."
+            "information, tracking assistance, or "
+            "help with a delayed or missing order."
         )
 
     def sales_response(
@@ -1287,22 +2045,34 @@ class TextChat:
             self.session,
         )
 
-        self.database.create_escalation(
+        escalation_id = (
+            self.database.create_escalation(
+                self.session_id,
+                text,
+                "high",
+            )
+        )
+
+        self.database.audit(
+            "ESCALATION_CREATED",
+            f"Escalation #{escalation_id} created.",
             self.session_id,
-            text,
-            "high",
         )
 
         return (
-            "I'm sorry that your experience has not "
-            "met expectations. I take the concern "
-            "seriously. I have classified this as a "
-            "high-priority concern.\n\n"
+            "I'm sorry that your experience has "
+            "not met expectations. I take the "
+            "concern seriously.\n\n"
+            f"I have classified this as a "
+            f"HIGH-priority escalation "
+            f"(#{escalation_id}).\n\n"
             "Please provide what happened, when it "
             "happened, which product or service was "
             "affected, and the resolution you believe "
-            "would be appropriate. The request has "
-            "been structured for human review."
+            "would be appropriate.\n\n"
+            "If a formal support record is required, "
+            "I can create a ticket from the information "
+            "you provide."
         )
 
     def partnership_response(
@@ -1394,6 +2164,7 @@ class TextChat:
             return self.help_response()
 
         if intent == "thanks":
+
             return (
                 "You're very welcome. I'm glad "
                 "I could assist. If you have another "
@@ -1405,6 +2176,14 @@ class TextChat:
         if intent == "goodbye":
 
             self.running = False
+
+            self.database.update_session(
+                self.session_id,
+                self.session.get(
+                    "customer_name"
+                ),
+                "closed",
+            )
 
             return (
                 "Thank you for contacting our support "
@@ -1502,15 +2281,22 @@ class TextChat:
             message
         ):
 
+            self.database.audit(
+                "SECURITY_BLOCK",
+                "Potential sensitive credential input blocked.",
+                self.session_id,
+            )
+
             self.add_message(
                 (
                     "For your security, please do "
                     "not send passwords, full payment "
                     "card numbers, PINs, OTPs, CVVs, "
-                    "or authentication credentials. "
-                    "Please remove that information "
-                    "and send only the non-sensitive "
-                    "details relevant to your request."
+                    "access tokens, or authentication "
+                    "credentials. Please remove that "
+                    "information and send only the "
+                    "non-sensitive details relevant "
+                    "to your request."
                 ),
                 False,
             )
@@ -1543,9 +2329,14 @@ class TextChat:
 
         except Exception as error:
 
+            self.database.audit(
+                "APPLICATION_ERROR",
+                type(error).__name__,
+                self.session_id,
+            )
+
             print(
-                f"[Internal error handled safely: "
-                f"{type(error).__name__}]"
+                "[Internal processing error handled safely.]"
             )
 
             self.add_message(
@@ -1560,7 +2351,7 @@ class TextChat:
             )
 
     # ============================================================
-    # COMMANDS
+    # DISPLAY COMMANDS
     # ============================================================
 
     def show_history(self) -> None:
@@ -1568,16 +2359,16 @@ class TextChat:
         rows = (
             self.database.get_session_messages(
                 self.session_id,
-                1000,
+                AppConfig.MAX_SESSION_MESSAGES,
             )
         )
 
         print()
-        print("=" * 78)
+        print("=" * 82)
         print(
             "                    CONVERSATION HISTORY"
         )
-        print("=" * 78)
+        print("=" * 82)
 
         if not rows:
 
@@ -1595,7 +2386,7 @@ class TextChat:
                     f"{row['text']}"
                 )
 
-        print("=" * 78)
+        print("=" * 82)
 
     def show_stats(self) -> None:
 
@@ -1606,67 +2397,50 @@ class TextChat:
         session_messages = len(
             self.database.get_session_messages(
                 self.session_id,
-                10000,
+                AppConfig.MAX_SESSION_MESSAGES,
             )
         )
 
         print()
-        print("=" * 78)
+        print("=" * 82)
         print(
             "                       SYSTEM STATISTICS"
         )
-        print("=" * 78)
+        print("=" * 82)
 
+        for key, value in statistics.items():
+
+            print(
+                f"{key.replace('_', ' ').title():<25}: "
+                f"{value}"
+            )
+
+        print()
         print(
             f"Current session messages : "
             f"{session_messages}"
         )
 
         print(
-            f"Database messages        : "
-            f"{statistics['messages']}"
-        )
-
-        print(
-            f"Customer records         : "
-            f"{statistics['customers']}"
-        )
-
-        print(
-            f"Knowledge entries        : "
-            f"{statistics['knowledge']}"
-        )
-
-        print(
-            f"Open escalations         : "
-            f"{statistics['escalations']}"
-        )
-
-        print(
-            f"Current intent            : "
+            f"Current intent           : "
             f"{self.session.get('intent') or 'Not determined'}"
         )
 
         print(
-            f"Priority                  : "
+            f"Current priority         : "
             f"{self.session.get('priority') or 'Normal'}"
         )
 
-        print(
-            f"Reference                 : "
-            f"{self.session.get('reference') or 'None'}"
-        )
-
-        print("=" * 78)
+        print("=" * 82)
 
     def show_session(self) -> None:
 
         print()
-        print("=" * 78)
+        print("=" * 82)
         print(
             "                         SESSION CONTEXT"
         )
-        print("=" * 78)
+        print("=" * 82)
 
         fields = (
             ("Session ID", None),
@@ -1693,7 +2467,7 @@ class TextChat:
                 f"{label:<20}: {value}"
             )
 
-        print("=" * 78)
+        print("=" * 82)
 
     def show_knowledge(self) -> None:
 
@@ -1702,11 +2476,11 @@ class TextChat:
         )
 
         print()
-        print("=" * 78)
+        print("=" * 82)
         print(
             "                         KNOWLEDGE BASE"
         )
-        print("=" * 78)
+        print("=" * 82)
 
         for entry in entries:
 
@@ -1717,16 +2491,14 @@ class TextChat:
             )
 
             print(
-                f"Keywords: "
-                f"{entry['keywords']}"
+                f"Keywords: {entry['keywords']}"
             )
 
             print(
-                f"Answer: "
-                f"{entry['answer']}"
+                f"Answer: {entry['answer']}"
             )
 
-        print("=" * 78)
+        print("=" * 82)
 
     def show_escalations(self) -> None:
 
@@ -1735,11 +2507,11 @@ class TextChat:
         )
 
         print()
-        print("=" * 78)
+        print("=" * 82)
         print(
             "                         OPEN ESCALATIONS"
         )
-        print("=" * 78)
+        print("=" * 82)
 
         if not escalations:
 
@@ -1758,45 +2530,314 @@ class TextChat:
                 )
 
                 print(
+                    f"Session: "
+                    f"{escalation['session_id']}"
+                )
+
+                print(
                     f"Reason: "
                     f"{escalation['reason']}"
                 )
 
                 print()
 
-        print("=" * 78)
+        print("=" * 82)
+
+    # ============================================================
+    # TICKETS
+    # ============================================================
+
+    def show_tickets(self) -> None:
+
+        tickets = (
+            self.database.get_tickets()
+        )
+
+        print()
+        print("=" * 110)
+        print(
+            "                              SUPPORT TICKETS"
+        )
+        print("=" * 110)
+
+        if not tickets:
+
+            print("No support tickets found.")
+
+        else:
+
+            for ticket in tickets:
+
+                print(
+                    f"{ticket['ticket_number']} | "
+                    f"{ticket['priority'].upper():<6} | "
+                    f"{ticket['status'].upper():<12} | "
+                    f"{ticket['assigned_agent']}"
+                )
+
+                print(
+                    f"Subject: "
+                    f"{ticket['subject']}"
+                )
+
+                print(
+                    f"Customer: "
+                    f"{ticket['customer_name'] or 'Not provided'}"
+                )
+
+                print(
+                    f"SLA due: "
+                    f"{ticket['sla_due_at']}"
+                )
+
+                print("-" * 110)
+
+        print("=" * 110)
+
+    def show_sla(self) -> None:
+
+        breaches = (
+            self.database.get_sla_breaches()
+        )
+
+        tickets = self.database.get_tickets()
+
+        active = [
+            ticket
+            for ticket in tickets
+            if ticket["status"]
+            not in ("resolved", "closed")
+        ]
+
+        print()
+        print("=" * 82)
+        print(
+            "                         SLA MONITOR"
+        )
+        print("=" * 82)
+
+        print(
+            f"Active tickets : {len(active)}"
+        )
+
+        print(
+            f"SLA breaches   : {len(breaches)}"
+        )
+
+        if breaches:
+
+            print()
+            print("BREACHED TICKETS:")
+
+            for ticket in breaches:
+
+                print(
+                    f"- {ticket['ticket_number']} | "
+                    f"{ticket['priority'].upper()} | "
+                    f"Due: {ticket['sla_due_at']}"
+                )
+
+        print("=" * 82)
+
+    # ============================================================
+    # AUDIT
+    # ============================================================
+
+    def show_audit(self) -> None:
+
+        logs = (
+            self.database.get_audit_logs()
+        )
+
+        print()
+        print("=" * 100)
+        print(
+            "                         AUDIT LOG"
+        )
+        print("=" * 100)
+
+        if not logs:
+
+            print("No audit events recorded.")
+
+        else:
+
+            for log in logs:
+
+                print(
+                    f"[{log['created_at']}] "
+                    f"{log['action']}"
+                )
+
+                if log["session_id"]:
+
+                    print(
+                        f"Session: "
+                        f"{log['session_id']}"
+                    )
+
+                if log["details"]:
+
+                    print(
+                        f"Details: "
+                        f"{log['details']}"
+                    )
+
+                print()
+
+        print("=" * 100)
+
+    # ============================================================
+    # CONFIGURATION
+    # ============================================================
+
+    def show_config(self) -> None:
+
+        config = (
+            self.database.get_all_config()
+        )
+
+        print()
+        print("=" * 82)
+        print(
+            "                       BUSINESS CONFIGURATION"
+        )
+        print("=" * 82)
+
+        for key, value in config.items():
+
+            print(
+                f"{key:<25}: {value}"
+            )
+
+        print("=" * 82)
+
+    # ============================================================
+    # HEALTH
+    # ============================================================
+
+    def show_health(self) -> None:
+
+        health = (
+            self.database.health_check()
+        )
+
+        print()
+        print("=" * 82)
+        print(
+            "                         SYSTEM HEALTH"
+        )
+        print("=" * 82)
+
+        print(
+            f"Application : {AppConfig.APP_NAME}"
+        )
+
+        print(
+            f"Version     : {AppConfig.VERSION}"
+        )
+
+        print(
+            f"Database    : {health['database']}"
+        )
+
+        print(
+            f"Status      : {health['status']}"
+        )
+
+        print("=" * 82)
+
+    # ============================================================
+    # EXPORT
+    # ============================================================
 
     def export_data(self) -> None:
 
-        output = (
+        messages = (
             self.database.export_messages()
+        )
+
+        tickets = (
+            self.database.export_tickets()
+        )
+
+        self.database.audit(
+            "DATA_EXPORTED",
+            (
+                f"Messages: {messages.name}; "
+                f"Tickets: {tickets.name}"
+            ),
+            self.session_id,
         )
 
         print()
         print(
-            f"Conversation data exported to:"
+            "Business data exported successfully."
         )
+
         print(
-            f"{output.resolve()}"
+            f"Messages: {messages.resolve()}"
         )
+
+        print(
+            f"Tickets : {tickets.resolve()}"
+        )
+
+    # ============================================================
+    # CLEAR SESSION
+    # ============================================================
 
     def clear_session(self) -> None:
 
         old_session = self.session_id
 
-        self.session_id = (
-            datetime.now().strftime(
-                "%Y%m%d%H%M%S%f"
-            )
+        self.database.update_session(
+            old_session,
+            self.session.get(
+                "customer_name"
+            ),
+            "closed",
         )
 
-        for key in self.session:
-            self.session[key] = None
+        self.database.audit(
+            "SESSION_CLOSED",
+            "Session closed by user.",
+            old_session,
+        )
+
+        self.session_id = (
+            self.create_session_id()
+        )
+
+        self.session = {
+            "intent": None,
+            "customer_name": None,
+            "priority": None,
+            "issue": None,
+            "product": None,
+            "reference": None,
+            "status": "active",
+            "last_question": None,
+        }
+
+        self.database.create_session(
+            self.session_id
+        )
+
+        self.database.audit(
+            "SESSION_CREATED",
+            "New session created after reset.",
+            self.session_id,
+        )
 
         print()
         print(
-            f"Session {old_session} has been "
-            "cleared."
+            f"Previous session {old_session} "
+            "has been closed."
+        )
+
+        print(
+            f"New session: {self.session_id}"
         )
 
         self.add_message(
@@ -1807,14 +2848,18 @@ class TextChat:
             False,
         )
 
+    # ============================================================
+    # HELP
+    # ============================================================
+
     def show_help(self) -> None:
 
         print()
-        print("=" * 78)
+        print("=" * 82)
         print(
             "                              HELP"
         )
-        print("=" * 78)
+        print("=" * 82)
 
         print(
             "You can communicate with the chatbot "
@@ -1824,41 +2869,28 @@ class TextChat:
         print()
         print("Commands:")
 
-        print(
-            "  help          - Show help information"
-        )
+        commands = [
+            ("help", "Show help information"),
+            ("history", "Show current conversation"),
+            ("stats", "Show system statistics"),
+            ("session", "Show current context"),
+            ("knowledge", "Show knowledge base"),
+            ("escalations", "Show open escalations"),
+            ("tickets", "Show support tickets"),
+            ("sla", "Show SLA information"),
+            ("audit", "Show audit events"),
+            ("config", "Show business configuration"),
+            ("health", "Run system health check"),
+            ("export", "Export business data to CSV"),
+            ("clear", "Close current session and start another"),
+            ("quit / exit", "Exit the chatbot"),
+        ]
 
-        print(
-            "  history       - Show current conversation"
-        )
+        for command, description in commands:
 
-        print(
-            "  stats         - Show system statistics"
-        )
-
-        print(
-            "  session       - Show current context"
-        )
-
-        print(
-            "  knowledge     - Show local knowledge base"
-        )
-
-        print(
-            "  escalations   - Show open escalations"
-        )
-
-        print(
-            "  export        - Export messages to CSV"
-        )
-
-        print(
-            "  clear         - Start a new session"
-        )
-
-        print(
-            "  quit / exit   - Exit the chatbot"
-        )
+            print(
+                f"  {command:<16} - {description}"
+            )
 
         print()
         print(
@@ -1867,7 +2899,7 @@ class TextChat:
             "tokens, or authentication credentials."
         )
 
-        print("=" * 78)
+        print("=" * 82)
 
     # ============================================================
     # APPLICATION LOOP
@@ -1951,6 +2983,26 @@ class TextChat:
                     self.show_escalations()
                     continue
 
+                if command == "tickets":
+                    self.show_tickets()
+                    continue
+
+                if command == "sla":
+                    self.show_sla()
+                    continue
+
+                if command == "audit":
+                    self.show_audit()
+                    continue
+
+                if command == "config":
+                    self.show_config()
+                    continue
+
+                if command == "health":
+                    self.show_health()
+                    continue
+
                 if command == "export":
                     self.export_data()
                     continue
@@ -1965,8 +3017,18 @@ class TextChat:
 
         finally:
 
+            self.database.audit(
+                "APPLICATION_SHUTDOWN",
+                "Chatbot application stopped.",
+                self.session_id,
+            )
+
             self.database.close()
 
+
+# ================================================================
+# ENTRY POINT
+# ================================================================
 
 def main() -> None:
     """Application entry point."""
